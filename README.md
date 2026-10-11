@@ -21,16 +21,17 @@ Singapore PM2.5 × regional fires × local weather — data crawl & data diction
 2. Copy `.env.example` to `.env` and fill in your keys:
    ```
    FIRMS_MAP_KEY=your_firms_map_key   # https://firms.modaps.eosdis.nasa.gov/api/map_key/
+   DATAGOV_API_KEY=your_datagov_key   # data.gov.sg -> log in -> Create API Key
    ```
-   `DATAGOV_API_KEY` is optional and only raises the data.gov.sg anonymous rate limit.
-3. Open `data.ipynb` and run the cells top to bottom.
+   `DATAGOV_API_KEY` is optional but strongly recommended: it raises the data.gov.sg rate limit from 6 to 12 requests / 10 s (Developer key), or 30 with a Production key (also set `DATAGOV_TIER=prod`).
+3. Open `data.ipynb` and run the cells top to bottom. The crawl window is 2019–2023. PM2.5 and FIRMS take minutes; the 5-year NEA weather crawl takes ~2.2 days with a Developer key (~21 h Production). Every day is cached under `data/raw/`, so you can stop and re-run the crawl cell to resume.
 
 ### Running on Google Colab
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/huythanh1324/sutd-stat/blob/main/data.ipynb)
 
 1. Open the notebook with the badge above, then **File → Save a copy in Drive** so your edits persist.
-2. Add `FIRMS_MAP_KEY` (and optionally `DATAGOV_API_KEY`) under **Secrets** (key icon in the left sidebar) and enable notebook access.
+2. Add `FIRMS_MAP_KEY` and `DATAGOV_API_KEY` (plus `DATAGOV_TIER=prod` for a Production key) under **Secrets** (key icon in the left sidebar) and enable notebook access.
 3. Run all cells. The setup cell mounts Google Drive and caches raw data in `MyDrive/claude-projects/sutd-stat/data/raw/`. Upload an existing local `data/raw/` folder there to skip the slow weather crawl.
 
 ## Project structure
