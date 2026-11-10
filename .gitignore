@@ -3,3 +3,6 @@
 data/
 
 .env
+__pycache__/
+graphify-out/
+notebooks_py/

@@ -3,3 +3,5 @@ numpy>=1.26
 requests>=2.31
 matplotlib>=3.8
 ipykernel>=6.29
+statsmodels>=0.14
+nbconvert>=7.0
