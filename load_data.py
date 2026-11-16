@@ -53,6 +53,7 @@ def load_weather(raw=RAW, endpoints=None, start=None, end=None):
         in_window = lambda f: (start or "0000") <= f.name[:10] <= (end or "9999")
         readings += [pd.read_csv(f) for f in sorted(d.glob("*.csv.gz")) if in_window(f)]
         stations += [pd.read_csv(f) for f in sorted(d.glob("*_stations.csv")) if in_window(f)]
+    readings = [r for r in readings if len(r)]   # header-only files (days the API returned nothing) would make `value` text
     if not readings:
         raise FileNotFoundError(f"no weather files under {root}")
     wx = pd.concat(readings, ignore_index=True)
@@ -63,6 +64,27 @@ def load_weather(raw=RAW, endpoints=None, start=None, end=None):
              .drop(columns="date")
              .reset_index(drop=True))
     return wx, sta
+
+
+def load_weather_station_hours(raw=RAW, start=None, end=None):
+    """Weather reduced to per (hour, station) sums and counts, read one month at a time.
+
+    Six years of 1-minute readings do not fit in memory, but this reduced table does.
+    Returns (station_hours, station metadata); `features.weather_features` turns it into island means.
+    """
+    from features import weather_station_hours
+
+    days = sorted({f.name[:10] for f in (Path(raw) / "weather").glob("*/*.csv.gz")
+                   if (start or "0000") <= f.name[:10] <= (end or "9999")})
+    if not days:
+        raise FileNotFoundError(f"no weather files under {Path(raw) / 'weather'}")
+    parts, stations = [], []
+    for month in sorted({d[:7] for d in days}):
+        wx, sta = load_weather(raw, start=max(start or "0000", f"{month}-01"), end=min(end or "9999", f"{month}-31"))
+        parts.append(weather_station_hours(wx))
+        stations.append(sta)
+    sta = pd.concat(stations, ignore_index=True).drop_duplicates(["stationId", "variable"]).reset_index(drop=True)
+    return pd.concat(parts), sta
 
 
 def load_firms(raw=RAW, sources=None, include_empty=False, start=None, end=None):
@@ -87,14 +109,21 @@ def load_firms(raw=RAW, sources=None, include_empty=False, start=None, end=None)
     return out
 
 
-def load_all(raw=RAW, start=None, end=None):
-    """Everything in the cache, optionally restricted to the dates start..end (inclusive)."""
+def load_all(raw=RAW, start=None, end=None, raw_weather=True):
+    """Everything in the cache, optionally restricted to the dates start..end (inclusive).
+
+    raw_weather=False returns `weather_station_hours` (per hour and station, read month by month)
+    instead of the 1-minute `weather` readings; use it for windows longer than a few months.
+    """
     pm, regions = load_pm25(raw, start=start, end=end)
-    wx, sta = load_weather(raw, start=start, end=end)
+    if raw_weather:
+        wx_key, (wx, sta) = "weather", load_weather(raw, start=start, end=end)
+    else:
+        wx_key, (wx, sta) = "weather_station_hours", load_weather_station_hours(raw, start=start, end=end)
     return {
         "pm25": pm,
         "pm25_regions": regions,
-        "weather": wx,
+        wx_key: wx,
         "weather_stations": sta,
         "firms": load_firms(raw, start=start, end=end),
     }

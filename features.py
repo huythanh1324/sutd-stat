@@ -36,41 +36,31 @@ def pm25_features(pm, grid, h):
 
 
 def calendar_features(grid):
-    hour = grid.hour
+    hour, doy = grid.hour, grid.dayofyear
     return pd.DataFrame({
         "hour_sin": np.sin(2 * np.pi * hour / 24),
         "hour_cos": np.cos(2 * np.pi * hour / 24),
+        "doy_sin": np.sin(2 * np.pi * doy / 365.25),     # annual cycle (haze season, monsoons)
+        "doy_cos": np.cos(2 * np.pi * doy / 365.25),
         "is_weekend": (grid.dayofweek >= 5).astype(int),
     }, index=grid)
 
 
-def full_stations(wx):
-    """Stations that report all 5 weather variables (the rest are rain gauges only)."""
-    n_vars = wx.groupby("stationId")["variable"].nunique()
-    return sorted(n_vars[n_vars == wx["variable"].nunique()].index)
+WEATHER_VARS = ["air-temperature", "relative-humidity", "rainfall", "wind-speed", "wind-direction"]
 
 
-def weather_features(wx, grid):
-    """Hourly island-mean weather from the full stations.
+def weather_station_hours(wx):
+    """Per (hour, station) sums and counts of each weather variable and of the u/v wind components.
 
-    Same convention as `to_hourly` in data.ipynb: hour-ending labels via ceil("h"), aggregate per
-    station first (mean, or sum for 5-minute rainfall), then average across stations.
+    Sums and counts rather than means, so tables built from separate chunks of days can be stacked
+    and added up exactly (the hour ending 00:00 takes minutes from two daily files).
+    Hour-ending labels via ceil("h"), the same convention as `to_hourly` in data.ipynb.
     """
-    w = wx[wx["stationId"].isin(full_stations(wx))].copy()
+    w = wx[["timestamp", "stationId", "variable", "value"]].copy()
     w["hour"] = w["timestamp"].dt.ceil("h")
+    out = w.groupby(["hour", "stationId", "variable"])["value"].agg(["sum", "count"]).unstack("variable")
 
-    def station_then_island(var, how):
-        g = w[w["variable"] == var].groupby(["hour", "stationId"])["value"]
-        return getattr(g, how)().groupby("hour").mean().reindex(grid)
-
-    out = pd.DataFrame({
-        "temp": station_then_island("air-temperature", "mean"),
-        "rh": station_then_island("relative-humidity", "mean"),
-        "rain_1h": station_then_island("rainfall", "sum"),
-        "ws_ms": station_then_island("wind-speed", "mean") * KNOTS_TO_MS,
-    }, index=grid)
-
-    # wind vector per minute and station, then hourly mean of the components
+    # wind vector per minute and station (speed in m/s); hourly components are averaged later
     wd = w[w["variable"] == "wind-direction"].set_index(["timestamp", "stationId"])["value"]
     ws = w[w["variable"] == "wind-speed"].set_index(["timestamp", "stationId"])["value"] * KNOTS_TO_MS
     uv = pd.concat({"dir": wd, "spd": ws}, axis=1).dropna().reset_index()
@@ -78,9 +68,37 @@ def weather_features(wx, grid):
     uv["u"] = -uv["spd"] * np.sin(rad)          # > 0: wind blowing towards the east
     uv["v"] = -uv["spd"] * np.cos(rad)          # > 0: wind blowing towards the north
     uv["hour"] = uv["timestamp"].dt.ceil("h")
-    comp = uv.groupby(["hour", "stationId"])[["u", "v"]].mean().groupby("hour").mean().reindex(grid)
-    out["u"], out["v"] = comp["u"], comp["v"]
+    comp = uv.groupby(["hour", "stationId"])[["u", "v"]].agg(["sum", "count"]).swaplevel(axis=1)
+    return pd.concat([out, comp], axis=1)
 
+
+def full_stations(sh):
+    """Stations that report all 5 weather variables somewhere in the window (the rest are rain gauges)."""
+    reported = sh["count"][WEATHER_VARS].groupby("stationId").sum() > 0
+    return sorted(reported.index[reported.all(axis=1)])
+
+
+def weather_features(sh, grid):
+    """Hourly island-mean weather from the full stations, given `weather_station_hours` output.
+
+    Aggregate per station first (mean, or sum for 5-minute rainfall), then average across stations.
+    """
+    sh = sh.groupby(level=["hour", "stationId"]).sum(min_count=1)   # merges hours split across chunks
+    sh = sh[sh.index.get_level_values("stationId").isin(full_stations(sh))]
+    station_mean = sh["sum"] / sh["count"].where(sh["count"] > 0)
+    station_sum = sh["sum"].where(sh["count"] > 0)
+
+    def island(col):
+        return col.groupby("hour").mean().reindex(grid)
+
+    out = pd.DataFrame({
+        "temp": island(station_mean["air-temperature"]),
+        "rh": island(station_mean["relative-humidity"]),
+        "rain_1h": island(station_sum["rainfall"]),
+        "ws_ms": island(station_mean["wind-speed"]) * KNOTS_TO_MS,
+        "u": island(station_mean["u"]),
+        "v": island(station_mean["v"]),
+    }, index=grid)
     out["rain_24h"] = out["rain_1h"].rolling(24, min_periods=24).sum()
     return out
 
@@ -130,7 +148,8 @@ def build_model_table(d, h=24):
     """Join all features on the hourly grid; `target_time` = t + h."""
     grid = hourly_grid(d["pm25"])
     pm = pm25_features(d["pm25"], grid, h)
-    wx = weather_features(d["weather"], grid)
+    sh = d["weather_station_hours"] if "weather_station_hours" in d else weather_station_hours(d["weather"])
+    wx = weather_features(sh, grid)
     fire = fire_features(d["firms"], grid)
     table = pd.concat([pm, calendar_features(grid), wx, fire, transport_features(fire, wx)], axis=1)
     table.insert(0, "target_time", table.index + pd.Timedelta(hours=h))
